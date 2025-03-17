@@ -25,16 +25,18 @@ def dota_energies(num_tokens, input_shape, projection_dim,
     )(inputs, energies)
     
     # Stack transformer encoders
+    transformer_blocks = []
     for i in range(num_transformers):
-
         # Transformer encoder blocks.
-        tokens = TransformerEncoder(
+        transformer_block = TransformerEncoder(
             num_heads, 
             num_tokens, 
             projection_dim,
             causal=causal,
             dropout_rate=dropout_rate,
-        )(tokens)
+        )
+        transformer_blocks.append(transformer_block)
+        tokens = transformer_block(tokens)
 
     # Decode and upsample
     outputs = ConvDecoder(
@@ -42,4 +44,23 @@ def dota_energies(num_tokens, input_shape, projection_dim,
         kernel_size=kernel_size,
     )(tokens)
 
-    return Model(inputs=[inputs, energies], outputs=outputs)
+    model = Model(inputs=[inputs, energies], outputs=outputs)
+    
+    # Add methods to enable/disable KV caching
+    def enable_kv_cache(self, enable=True):
+        """Enable or disable KV caching for all transformer blocks."""
+        for block in transformer_blocks:
+            block.enable_caching(enable)
+        return self
+    
+    def reset_kv_cache(self):
+        """Reset KV cache for all transformer blocks."""
+        for block in transformer_blocks:
+            block.reset_cache()
+        return self
+    
+    # Add methods to the model
+    model.enable_kv_cache = enable_kv_cache.__get__(model)
+    model.reset_kv_cache = reset_kv_cache.__get__(model)
+    
+    return model

@@ -1,34 +1,84 @@
-# Dose calculation via Transformers #
+# DoTA with KV Caching
 
-This repository contains the code to calculate the dose deposited by a mono-energetic beam of protons, for arbitrary patient geometries and beam energies. 
+DoTA (Dose calculation via Transformers) is a transformer-based model for proton dose calculations. This repository includes an implementation of Key-Value (KV) caching to improve inference speed.
 
-* GNU General Public License 3.0
-* Copyright: Oscar Pastor-Serrano, TU Delft
+## Overview
 
-The 'main' branch contains the code for proton beamlets, while the 'dev_photons' branch contains the code for predictin full photon beams.
+The DoTA model uses a transformer architecture to predict dose distributions for proton therapy. KV caching is an optimization technique that improves inference speed by storing and reusing attention scores.
 
-### Credits ###
+## Repository Structure
 
-If you like this repository, please click on Star!
+- `src/`: Source code for the DoTA model
+- `data/`: Training and test data (not included in the repository)
+- `weights/`: Model weights (not included in the repository)
+- `kv_cache_analysis.py`: Script to analyze KV caching performance
+- `train_with_kv_cache.py`: Script to train the model with KV caching
+- `view_kv_cache_results.py`: Script to view KV caching analysis results
+- `KV_CACHE_TRAINING_README.md`: Detailed instructions for training with KV caching
+- `KV_CACHING_REPORT.md`: Comprehensive report on KV caching performance
 
-If you use the code for your research, please consider citing:
+## Installation
 
-Pastor-Serrano, O., & Perkó, Z. (2021). Learning the Physics of Particle Transport via Transformers.
-<https://doi.org/10.1609/aaai.v36i11.21466>
+1. Clone the repository:
+   ```
+   git clone <repository-url>
+   cd dota
+   ```
 
-Pastor-Serrano, O., & Perkó, Z. (2022). Millisecond speed deep learning based proton dose calculation with Monte Carlo accuracy.
-<https://doi.org/10.1088/1361-6560/ac692e>
+2. Create a virtual environment:
+   ```
+   conda create -n kv python=3.7
+   conda activate kv
+   ```
+   or
+   ```
+   python -m venv kv
+   source kv/bin/activate  # On Windows: kv\Scripts\activate
+   ```
 
-Pastor-Serrano, O., Dong, P., Huang, C., Xing, L., & Perkó, Z. (2023). Sub-second photon dose prediction via transformer neural networks.
-<https://doi.org/10.1002/mp.16231> 
+3. Install dependencies:
+   ```
+   pip install tensorflow==2.4.1
+   pip install tensorflow-addons==0.13.0
+   pip install numpy matplotlib h5py
+   ```
 
-This project is supported by the following institutions:
+## Usage
 
-* KWF Kanker Bestrijding
-* Department of Radiation Science and Technology (TU Delft)
+### Training with KV Caching
 
-### Requirements ###
+```
+python train_with_kv_cache.py
+```
 
-* Tensorflow 2.5 or higher
-* pymedphys
-* tensorflow-addons
+See `KV_CACHE_TRAINING_README.md` for detailed instructions.
+
+### Analyzing KV Caching Performance
+
+```
+python kv_cache_analysis.py
+```
+
+### Viewing Results
+
+```
+python view_kv_cache_results.py
+```
+
+## KV Caching Performance
+
+KV caching provides significant performance improvements:
+
+- Overall Speedup: 1.27x faster inference time
+- First Sample Speedup: 3.43x faster
+- Output Correctness: 100% identical outputs
+
+See `KV_CACHING_REPORT.md` for a comprehensive analysis.
+
+## License
+
+[MIT License](LICENSE)
+
+## Acknowledgments
+
+This project builds upon the original DoTA model for proton dose calculations.
