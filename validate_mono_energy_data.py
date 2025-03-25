@@ -9,201 +9,106 @@ import numpy as np
 import os
 import matplotlib.pyplot as plt
 
-# Create output directory for validation results
-os.makedirs('mono_energy_validation', exist_ok=True)
-
-# Define data file paths
-data_paths = {
-    'train_part1': './data/training/train_part1.h5',
-    'train_part2': './data/training/train_part2.h5',
-    'test': './data/test/test.h5'
-}
-
-# Energy range to filter
-min_energy = 105
-max_energy = 106
-
-# Function to analyze energy distribution
-def analyze_energy_distribution(filename, key='energy0'):
-    """
-    Analyze the distribution of energies in an HDF5 file.
-    Returns statistics and indices within the specified range.
-    """
+def analyze_file(filename, label):
+    """Analyze a single HDF5 file and return energy statistics."""
+    print(f"\nAnalyzing {label} ({filename})...")
     try:
         with h5py.File(filename, 'r') as f:
-            if key not in f:
-                print(f"Warning: Key '{key}' not found in {filename}")
-                return None, []
+            # Print dataset names
+            print(f"Available datasets in {label}:")
+            for key in f.keys():
+                print(f"  - {key}")
             
-            energies = f[key][:]
+            # Get energy values
+            energies = f['energy0'][:]
+            min_energy = np.min(energies)
+            max_energy = np.max(energies)
+            mean_energy = np.mean(energies)
+            std_energy = np.std(energies)
             
-            # Basic statistics
-            stats = {
-                'min': np.min(energies),
-                'max': np.max(energies),
-                'mean': np.mean(energies),
-                'median': np.median(energies),
-                'std': np.std(energies),
-                'total_samples': len(energies)
-            }
+            # Count samples in target range
+            target_indices = np.where((energies >= 105) & (energies <= 106))[0]
+            num_target = len(target_indices)
             
-            # Find indices within range
-            indices = np.where((energies >= min_energy) & (energies <= max_energy))[0]
+            print(f"\nEnergy statistics for {label}:")
+            print(f"  Min energy: {min_energy:.2f} eV")
+            print(f"  Max energy: {max_energy:.2f} eV")
+            print(f"  Mean energy: {mean_energy:.2f} eV")
+            print(f"  Std energy: {std_energy:.2f} eV")
+            print(f"  Samples in 105-106 eV range: {num_target}")
             
-            return stats, indices
+            return energies, num_target
+            
     except Exception as e:
-        print(f"Error analyzing {filename}: {e}")
-        return None, []
+        print(f"Error analyzing {filename}: {str(e)}")
+        return None, 0
 
-# Analyze all data files
-results = {}
-total_training_samples = 0
-total_test_samples = 0
-
-for name, path in data_paths.items():
-    print(f"\nAnalyzing {name} ({path})...")
-    stats, indices = analyze_energy_distribution(path)
+def plot_energy_distribution(energies_dict, output_dir):
+    """Plot energy distribution for all files."""
+    plt.figure(figsize=(12, 6))
     
-    if stats:
-        results[name] = {
-            'stats': stats,
-            'indices': indices,
-            'count_in_range': len(indices),
-            'percentage_in_range': (len(indices) / stats['total_samples']) * 100
-        }
-        
-        print(f"Energy range: {stats['min']:.2f} - {stats['max']:.2f} eV")
-        print(f"Mean energy: {stats['mean']:.2f} eV, Std: {stats['std']:.2f} eV")
-        print(f"Total samples: {stats['total_samples']}")
-        print(f"Samples in {min_energy}-{max_energy} eV range: {len(indices)} ({results[name]['percentage_in_range']:.2f}%)")
-        
-        if 'train' in name:
-            total_training_samples += len(indices)
-        elif name == 'test':
-            total_test_samples = len(indices)
-
-print(f"\nTotal training samples in range: {total_training_samples}")
-print(f"Total test samples in range: {total_test_samples}")
-
-# Create visualizations
-plt.figure(figsize=(15, 10))
-
-# Plot 1: Histogram of all energy distributions
-plt.subplot(2, 2, 1)
-for name, result in results.items():
-    if result['stats']:
-        with h5py.File(data_paths[name], 'r') as f:
-            energies = f['energy0'][:]
-            plt.hist(energies, bins=50, alpha=0.5, label=name)
-
-plt.axvspan(min_energy, max_energy, color='red', alpha=0.2)
-plt.axvline(min_energy, color='red', linestyle='--')
-plt.axvline(max_energy, color='red', linestyle='--')
-plt.title('Energy Distribution Across All Datasets')
-plt.xlabel('Energy (eV)')
-plt.ylabel('Count')
-plt.legend()
-
-# Plot 2: Zoom in on the 105-106 eV range
-plt.subplot(2, 2, 2)
-for name, result in results.items():
-    if result['stats']:
-        with h5py.File(data_paths[name], 'r') as f:
-            energies = f['energy0'][:]
-            mask = (energies >= min_energy - 5) & (energies <= max_energy + 5)
-            plt.hist(energies[mask], bins=50, alpha=0.5, label=name)
-
-plt.axvspan(min_energy, max_energy, color='red', alpha=0.2)
-plt.axvline(min_energy, color='red', linestyle='--')
-plt.axvline(max_energy, color='red', linestyle='--')
-plt.title(f'Energy Distribution Around {min_energy}-{max_energy} eV Range')
-plt.xlabel('Energy (eV)')
-plt.ylabel('Count')
-plt.legend()
-
-# Plot 3: Bar chart of sample counts
-plt.subplot(2, 2, 3)
-names = []
-counts = []
-percentages = []
-
-for name, result in results.items():
-    names.append(name)
-    counts.append(result['count_in_range'])
-    percentages.append(result['percentage_in_range'])
-
-x = np.arange(len(names))
-plt.bar(x, counts)
-plt.xticks(x, names)
-plt.title(f'Sample Count in {min_energy}-{max_energy} eV Range')
-plt.xlabel('Dataset')
-plt.ylabel('Number of Samples')
-
-for i, count in enumerate(counts):
-    plt.text(i, count + 5, str(count), ha='center')
-
-# Plot 4: Bar chart of percentages
-plt.subplot(2, 2, 4)
-plt.bar(x, percentages)
-plt.xticks(x, names)
-plt.title(f'Percentage of Samples in {min_energy}-{max_energy} eV Range')
-plt.xlabel('Dataset')
-plt.ylabel('Percentage (%)')
-
-for i, pct in enumerate(percentages):
-    plt.text(i, pct + 0.5, f"{pct:.2f}%", ha='center')
-
-plt.tight_layout()
-plt.savefig('./mono_energy_validation/energy_distribution_analysis.png')
-plt.close()
-
-# Save detailed results
-if total_training_samples > 0:
-    print("\nData appears valid for monoenergetic training!")
+    for label, energies in energies_dict.items():
+        if energies is not None:
+            plt.hist(energies, bins=50, alpha=0.5, label=label)
     
-    # Inspect a sample within the range
-    for name, result in results.items():
-        if len(result['indices']) > 0:
-            sample_idx = result['indices'][0]
-            print(f"\nInspecting sample with ID {sample_idx} from {name}:")
-            
-            with h5py.File(data_paths[name], 'r') as f:
-                energy = f['energy0'][sample_idx]
-                geometry = np.transpose(f['geometry'][:,:,:,sample_idx])
-                dose = np.transpose(f['dose0'][:,:,:,sample_idx])
-                
-                # Get the shapes
-                geometry_shape = geometry.shape
-                dose_shape = dose.shape
-                
-                print(f"Energy: {energy:.2f} eV")
-                print(f"Geometry shape: {geometry_shape}")
-                print(f"Dose shape: {dose_shape}")
-                
-                # Use the middle slice for each dimension
-                mid_x = geometry_shape[1] // 2
-                
-                plt.figure(figsize=(15, 5))
-                
-                plt.subplot(1, 2, 1)
-                plt.imshow(geometry[:,mid_x,:], cmap='gray')
-                plt.title(f'Geometry (Sample {sample_idx}, Energy {energy:.2f} eV)')
-                plt.colorbar()
-                
-                plt.subplot(1, 2, 2)
-                plt.imshow(dose[:,mid_x,:], cmap='jet')
-                plt.title(f'Dose (Sample {sample_idx}, Energy {energy:.2f} eV)')
-                plt.colorbar()
-                
-                plt.tight_layout()
-                plt.savefig(f'./mono_energy_validation/sample_{sample_idx}_from_{name}.png')
-                plt.close()
-                
-                # Only do one sample for brevity
-                break
-else:
-    print("\nWarning: No training samples found in the specified energy range!")
-    print("You may need to adjust the energy range or check the data files.")
+    plt.axvline(x=105, color='r', linestyle='--', label='Target Range Start')
+    plt.axvline(x=106, color='r', linestyle='--', label='Target Range End')
+    plt.title('Energy Distribution Across Datasets')
+    plt.xlabel('Energy (eV)')
+    plt.ylabel('Count')
+    plt.legend()
+    plt.savefig(f'{output_dir}/energy_distribution.png')
+    plt.close()
 
-print("\nValidation completed. Results saved to ./mono_energy_validation/")
-print(f"Recommended energy range for normalization: e_min={min_energy}, e_max={max_energy}") 
+def plot_target_range_samples(energies_dict, output_dir):
+    """Plot detailed view of samples in target energy range."""
+    plt.figure(figsize=(12, 6))
+    
+    for label, energies in energies_dict.items():
+        if energies is not None:
+            mask = (energies >= 105) & (energies <= 106)
+            plt.hist(energies[mask], bins=20, alpha=0.5, label=label)
+    
+    plt.title('Samples in 105-106 eV Range')
+    plt.xlabel('Energy (eV)')
+    plt.ylabel('Count')
+    plt.legend()
+    plt.savefig(f'{output_dir}/target_range_samples.png')
+    plt.close()
+
+def main():
+    # Create output directory
+    os.makedirs('./mono_energy_validation', exist_ok=True)
+    
+    # Analyze files
+    energies_dict = {}
+    total_target_samples = 0
+    
+    # Analyze training file
+    train_energies, train_target = analyze_file('./data/training/train.h5', 'train')
+    energies_dict['train'] = train_energies
+    total_target_samples += train_target
+    
+    # Analyze test file
+    test_energies, test_target = analyze_file('./data/test/test.h5', 'test')
+    energies_dict['test'] = test_energies
+    total_target_samples += test_target
+    
+    print(f"\nTotal training samples in range: {train_target}")
+    print(f"Total test samples in range: {test_target}")
+    
+    # Create visualizations
+    plot_energy_distribution(energies_dict, './mono_energy_validation')
+    plot_target_range_samples(energies_dict, './mono_energy_validation')
+    
+    if total_target_samples == 0:
+        print("\nWarning: No training samples found in the specified energy range!")
+        print("You may need to adjust the energy range or check the data files.")
+    else:
+        print("\nValidation completed successfully!")
+        print(f"Found {total_target_samples} samples in the target energy range.")
+        print("Results saved to ./mono_energy_validation/")
+        print("Recommended energy range for normalization: e_min=105, e_max=106")
+
+if __name__ == "__main__":
+    main() 
