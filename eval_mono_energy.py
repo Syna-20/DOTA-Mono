@@ -12,9 +12,9 @@ import sys
 import os
 import matplotlib.pyplot as plt
 from tensorflow.config import list_physical_devices
+from dota_energies import dota_energies
 
 sys.path.append('./src')
-from models import dota_energies
 from preprocessing import DataRescaler
 from evaluation import infer
 from plot import plot_slice, plot_beam
@@ -34,193 +34,142 @@ path_test = "./data/test/"
 path_mono_weights = "./weights/weights_mono_energy.ckpt"
 filename_test = path_test + "test.h5"
 
-# Function to find indices within energy range
-def find_energy_indices(filename, energy_key='energy0', min_energy=105, max_energy=106):
-    with h5py.File(filename, 'r') as fh:
-        energies = fh[energy_key][:]
-        indices = np.where((energies >= min_energy) & (energies <= max_energy))[0]
-        print(f"Found {len(indices)} samples in range {min_energy}-{max_energy} eV in {filename}")
-        return indices.tolist()
+def find_energy_indices(filename, energy_range):
+    """Find indices of samples within specified energy range."""
+    with h5py.File(filename, 'r') as f:
+        energies = f['energy0'][:]
+        indices = np.where((energies >= energy_range[0]) & (energies <= energy_range[1]))[0]
+        print(f"Found {len(indices)} samples in {filename} within energy range {energy_range}")
+        return indices
 
-# Get test indices in the 105-106 eV range
-test_indices = find_energy_indices(filename_test)
-if not test_indices:
-    raise ValueError("No test samples found in the 105-106 eV range!")
+def load_data(filename, indices, scale):
+    """Load data for specified indices."""
+    with h5py.File(filename, 'r') as f:
+        geometry = f['geometry'][..., indices]
+        dose = f['dose0'][..., indices]
+        
+        # Normalize data
+        geometry = (geometry - scale['geom_min']) / (scale['geom_max'] - scale['geom_min'])
+        dose = (dose - scale['dose_min']) / (scale['dose_max'] - scale['dose_min'])
+        
+        return geometry, dose
 
-# Load normalization constants
-scaler = DataRescaler(path, filename=path + "train_part1.h5")
-scaler.load(inputs=True, outputs=True)
-scale = {
-    "y_min": scaler.y_min, 
-    "y_max": scaler.y_max,
-    "x_min": scaler.x_min, 
-    "x_max": scaler.x_max,
-    "e_min": 105,  # Override energy min for targeted range
-    "e_max": 106   # Override energy max for targeted range
-}
+def denormalize_data(data, scale):
+    """Denormalize data using the scale parameters."""
+    return data * (scale['dose_max'] - scale['dose_min']) + scale['dose_min']
 
-# Define and load the transformer model
-transformer = dota_energies(
-    num_tokens=param["num_tokens"],
-    input_shape=param["data_shape"],
-    projection_dim=param["projection_dim"],
-    num_heads=param["num_heads"],
-    num_transformers=param["num_transformers"], 
-    kernel_size=param["kernel_size"],
-    causal=True
-)
-transformer.summary()
-
-# Load the monoenergetic model weights
-try:
-    transformer.load_weights(path_mono_weights)
-    print(f"Successfully loaded weights from {path_mono_weights}")
-except:
-    print(f"Warning: Could not load weights from {path_mono_weights}")
-    print("Using randomly initialized weights - results will be poor!")
-
-# Function to evaluate the model
-def evaluate_mono_model(model, testIDs, filename, scale):
-    """
-    Evaluate the monoenergetic model on test samples.
-    """
-    mae_values = []
-    mse_values = []
-    inference_times = []
+def evaluate_model(model, test_geometry, test_dose, scale, output_dir):
+    """Evaluate model on test data and save results."""
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
     
-    print(f"Evaluating model on {len(testIDs)} test samples...")
+    # Make predictions
+    predictions = model.predict(test_geometry)
     
-    # Evaluate on a subset of test samples for visualization
-    vis_samples = min(5, len(testIDs))
-    for i in range(vis_samples):
-        # Infer and measure time
-        start_time = time.time()
-        inputs, prediction, ground_truth = infer(model, testIDs[i], filename, scale)
-        inference_time = time.time() - start_time
-        inference_times.append(inference_time)
-        
-        # Calculate metrics
-        mae = np.mean(np.abs(prediction - ground_truth))
-        mse = np.mean(np.square(prediction - ground_truth))
-        mae_values.append(mae)
-        mse_values.append(mse)
-        
-        print(f"Sample {i+1}/{vis_samples} - MAE: {mae:.6f}, MSE: {mse:.6f}, Time: {inference_time:.4f}s")
-        
-        # Get the middle slice for visualization
-        mid_slice = inputs.shape[2] // 2
-        
-        # Create visualizations
+    # Denormalize predictions and ground truth
+    predictions = denormalize_data(predictions, scale)
+    test_dose = denormalize_data(test_dose, scale)
+    
+    # Calculate metrics
+    mae = np.mean(np.abs(predictions - test_dose))
+    mse = np.mean((predictions - test_dose) ** 2)
+    
+    print(f"\nEvaluation Results:")
+    print(f"Mean Absolute Error: {mae:.6f}")
+    print(f"Mean Squared Error: {mse:.6f}")
+    
+    # Save metrics
+    np.savez(f'{output_dir}/metrics.npz', mae=mae, mse=mse)
+    
+    # Visualize results for a few samples
+    num_samples = min(5, predictions.shape[-1])
+    for i in range(num_samples):
         plt.figure(figsize=(15, 5))
         
         # Plot input geometry
         plt.subplot(1, 3, 1)
-        plt.imshow(inputs[:, :, mid_slice], cmap='gray')
-        plt.title(f'Input Geometry (Middle Slice {mid_slice})')
+        plt.imshow(test_geometry[..., 75, i], cmap='gray')
+        plt.title('Input Geometry')
         plt.colorbar()
         
-        # Plot prediction
+        # Plot predicted dose
         plt.subplot(1, 3, 2)
-        plt.imshow(prediction[:, :, mid_slice], cmap='jet')
-        plt.title(f'Predicted Dose (Middle Slice {mid_slice})')
+        plt.imshow(predictions[..., 75, i], cmap='viridis')
+        plt.title('Predicted Dose')
         plt.colorbar()
         
-        # Plot ground truth
+        # Plot ground truth dose
         plt.subplot(1, 3, 3)
-        plt.imshow(ground_truth[:, :, mid_slice], cmap='jet')
-        plt.title(f'Ground Truth Dose (Middle Slice {mid_slice})')
+        plt.imshow(test_dose[..., 75, i], cmap='viridis')
+        plt.title('Ground Truth Dose')
         plt.colorbar()
         
         plt.tight_layout()
-        plt.savefig(f'./mono_energy_eval/sample_{testIDs[i]}_comparison.png')
+        plt.savefig(f'{output_dir}/sample_{i}.png')
         plt.close()
-        
-        # Additional visualizations using specialized plotting functions
-        try:
-            # Plot beam view
-            plot_beam(ground_truth, prediction, title=f"Sample {testIDs[i]}: Ground Truth vs Prediction")
-            plt.savefig(f'./mono_energy_eval/sample_{testIDs[i]}_beam.png')
-            plt.close()
-            
-            # Plot slice comparison
-            plot_slice(ground_truth, prediction, title=f"Sample {testIDs[i]}: Slice Comparison")
-            plt.savefig(f'./mono_energy_eval/sample_{testIDs[i]}_slice.png')
-            plt.close()
-        except Exception as e:
-            print(f"Warning: Could not create specialized visualizations: {e}")
     
-    # Evaluate on all test samples for metrics
-    for i, test_id in enumerate(testIDs):
-        if i % 10 == 0:
-            print(f"Processing sample {i+1}/{len(testIDs)}...")
-        
-        _, prediction, ground_truth = infer(model, test_id, filename, scale)
-        
-        mae = np.mean(np.abs(prediction - ground_truth))
-        mse = np.mean(np.square(prediction - ground_truth))
-        mae_values.append(mae)
-        mse_values.append(mse)
+    # Plot error distribution
+    plt.figure(figsize=(10, 6))
+    errors = predictions - test_dose
+    plt.hist(errors.flatten(), bins=50, density=True)
+    plt.title('Error Distribution')
+    plt.xlabel('Error')
+    plt.ylabel('Density')
+    plt.savefig(f'{output_dir}/error_distribution.png')
+    plt.close()
+
+def main():
+    # Create output directory
+    output_dir = './mono_energy_eval'
+    os.makedirs(output_dir, exist_ok=True)
     
-    # Calculate overall metrics
-    avg_mae = np.mean(mae_values)
-    avg_mse = np.mean(mse_values)
-    avg_inference_time = np.mean(inference_times)
+    # Load hyperparameters
+    with open('./hyperparam.json', 'r') as f:
+        hyperparams = json.load(f)
     
-    print("\nEvaluation Results:")
-    print(f"Average MAE: {avg_mae:.6f}")
-    print(f"Average MSE: {avg_mse:.6f}")
-    print(f"Average Inference Time: {avg_inference_time:.4f}s")
-    
-    # Save results
-    results = {
-        'mae': mae_values,
-        'mse': mse_values,
-        'inference_times': inference_times,
-        'avg_mae': avg_mae,
-        'avg_mse': avg_mse,
-        'avg_inference_time': avg_inference_time
+    # Load normalization constants
+    scale = {
+        'geom_min': float(np.loadtxt('mono_minmax_geometry.txt')[0]),
+        'geom_max': float(np.loadtxt('mono_minmax_geometry.txt')[1]),
+        'dose_min': float(np.loadtxt('mono_minmax_dose.txt')[0]),
+        'dose_max': float(np.loadtxt('mono_minmax_dose.txt')[1])
     }
     
-    np.savez('./mono_energy_eval/evaluation_results.npz', **results)
+    # Define energy range
+    energy_range = (105, 106)
     
-    # Create summary plots
-    plt.figure(figsize=(15, 5))
+    # Load test data
+    test_file = './data/test/test.h5'
+    test_indices = find_energy_indices(test_file, energy_range)
+    test_geometry, test_dose = load_data(test_file, test_indices, scale)
     
-    # Plot MAE distribution
-    plt.subplot(1, 3, 1)
-    plt.hist(mae_values, bins=20)
-    plt.axvline(avg_mae, color='r', linestyle='dashed', linewidth=2)
-    plt.title(f'MAE Distribution (Avg: {avg_mae:.6f})')
-    plt.xlabel('MAE')
-    plt.ylabel('Count')
+    # Create and load model
+    transformer = dota_energies(
+        num_layers=hyperparams['num_layers'],
+        d_model=hyperparams['d_model'],
+        num_heads=hyperparams['num_heads'],
+        dff=hyperparams['dff'],
+        input_vocab_size=hyperparams['input_vocab_size'],
+        target_vocab_size=hyperparams['target_vocab_size'],
+        maximum_position_encoding=hyperparams['maximum_position_encoding'],
+        dropout_rate=hyperparams['dropout_rate']
+    )
     
-    # Plot MSE distribution
-    plt.subplot(1, 3, 2)
-    plt.hist(mse_values, bins=20)
-    plt.axvline(avg_mse, color='r', linestyle='dashed', linewidth=2)
-    plt.title(f'MSE Distribution (Avg: {avg_mse:.6f})')
-    plt.xlabel('MSE')
-    plt.ylabel('Count')
+    # Load weights
+    try:
+        transformer.load_weights('./weights/weights_mono_energy.ckpt')
+        print("Successfully loaded model weights")
+    except Exception as e:
+        print(f"Error loading weights: {str(e)}")
+        return
     
-    # Plot inference time
-    plt.subplot(1, 3, 3)
-    plt.hist(inference_times, bins=10)
-    plt.axvline(avg_inference_time, color='r', linestyle='dashed', linewidth=2)
-    plt.title(f'Inference Time (Avg: {avg_inference_time:.4f}s)')
-    plt.xlabel('Time (s)')
-    plt.ylabel('Count')
+    # Evaluate model
+    evaluate_model(transformer, test_geometry, test_dose, scale, output_dir)
     
-    plt.tight_layout()
-    plt.savefig('./mono_energy_eval/metrics_summary.png')
-    plt.close()
-    
-    return results
+    print(f"\nEvaluation complete. Results saved to {output_dir}")
 
-# Run the evaluation
-results = evaluate_mono_model(transformer, test_indices, filename_test, scale)
-
-print("\nEvaluation completed!")
-print("Results and visualizations saved to ./mono_energy_eval/")
+if __name__ == "__main__":
+    main()
 
 # Optionally use KV caching for comparison
 print("\nRunning comparison with KV caching...")

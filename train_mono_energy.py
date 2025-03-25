@@ -14,6 +14,10 @@ import tensorflow as tf
 from tensorflow_addons.optimizers import LAMB
 from tensorflow.keras.callbacks import ModelCheckpoint, LearningRateScheduler, EarlyStopping
 from tensorflow.config import list_physical_devices
+from tensorflow.keras import Model
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import ReduceLROnPlateau
+import matplotlib.pyplot as plt
 
 sys.path.append('./src')
 from models import dota_energies
@@ -49,38 +53,57 @@ filename_test = path_test + 'test.h5'
 # Filter IDs based on energy (105-106 eV)
 print("Extracting samples with energy between 105-106 eV...")
 
-# Function to find indices within energy range
-def find_energy_indices(filename, energy_key='energy0', min_energy=105, max_energy=106):
-    with h5py.File(filename, 'r') as fh:
-        energies = fh[energy_key][:]
-        indices = np.where((energies >= min_energy) & (energies <= max_energy))[0]
-        print(f"Found {len(indices)} samples in range {min_energy}-{max_energy} eV in {filename}")
-        return indices.tolist()
+def find_energy_indices(filename, energy_range):
+    """Find indices of samples within specified energy range."""
+    with h5py.File(filename, 'r') as f:
+        energies = f['energy0'][:]
+        indices = np.where((energies >= energy_range[0]) & (energies <= energy_range[1]))[0]
+        print(f"Found {len(indices)} samples in {filename} within energy range {energy_range}")
+        return indices
+
+def load_data(filename, indices, scale):
+    """Load data for specified indices."""
+    with h5py.File(filename, 'r') as f:
+        geometry = f['geometry'][..., indices]
+        dose = f['dose0'][..., indices]
+        
+        # Normalize data
+        geometry = (geometry - scale['geom_min']) / (scale['geom_max'] - scale['geom_min'])
+        dose = (dose - scale['dose_min']) / (scale['dose_max'] - scale['dose_min'])
+        
+        return geometry, dose
+
+def create_data_generator(geometry, dose, batch_size=8):
+    """Create a data generator for training."""
+    num_samples = geometry.shape[-1]
+    indices = np.arange(num_samples)
+    
+    while True:
+        np.random.shuffle(indices)
+        for i in range(0, num_samples, batch_size):
+            batch_indices = indices[i:i + batch_size]
+            yield geometry[..., batch_indices], dose[..., batch_indices]
 
 # Get indices from each file
 try:
-    train_part1_indices = find_energy_indices(filename_train_part1)
+    train_indices = find_energy_indices('./data/training/train.h5', (105, 106))
+    print(f"Training samples in range: {len(train_indices)}")
 except:
-    print(f"Warning: Could not process {filename_train_part1}")
-    train_part1_indices = []
+    print(f"Warning: Could not process ./data/training/train.h5")
+    train_indices = np.array([])
     
 try:
-    train_part2_indices = find_energy_indices(filename_train_part2)
-except:
-    print(f"Warning: Could not process {filename_train_part2}")
-    train_part2_indices = []
-    
-try:
-    test_indices = find_energy_indices(filename_test)
+    test_indices = find_energy_indices('./data/test/test.h5', (105, 106))
     print(f"Test samples in range: {len(test_indices)}")
 except:
-    print(f"Warning: Could not process {filename_test}")
-    test_indices = []
+    print(f"Warning: Could not process ./data/test/test.h5")
+    test_indices = np.array([])
 
-# Combine all training indices
-all_train_indices = train_part1_indices + train_part2_indices
-if not all_train_indices:
+if len(train_indices) == 0:
     raise ValueError("No training samples found in the specified energy range!")
+
+# Use all training indices
+all_train_indices = train_indices
 
 print(f"Total training samples in energy range 105-106 eV: {len(all_train_indices)}")
 
@@ -98,16 +121,16 @@ print(f"Validation samples: {len(valIDs)}")
 scaler = DataRescaler(path, filename=filename_train_part1)
 scaler.load(inputs=True, outputs=True)
 scale = {
-    'y_min': scaler.y_min, 
-    'y_max': scaler.y_max,
-    'x_min': scaler.x_min, 
-    'x_max': scaler.x_max,
+    'x_min': float(np.loadtxt('mono_minmax_geometry.txt')[0]),
+    'x_max': float(np.loadtxt('mono_minmax_geometry.txt')[1]),
+    'y_min': float(np.loadtxt('mono_minmax_dose.txt')[0]),
+    'y_max': float(np.loadtxt('mono_minmax_dose.txt')[1]),
     'e_min': 105,  # Override energy min for targeted range
     'e_max': 106   # Override energy max for targeted range
 }
 
-# The file to use for training (choose the one with most samples)
-training_file = filename_train_part1 if len(train_part1_indices) >= len(train_part2_indices) else filename_train_part2
+# The file to use for training
+training_file = './data/training/train.h5'
 
 # Initialize generators
 train_gen = DataGenerator(trainIDs, batch_size, training_file, scale, num_energies=1)
@@ -119,7 +142,7 @@ transformer = dota_energies(
     input_shape=param['data_shape'],
     projection_dim=param['projection_dim'],
     num_heads=param['num_heads'],
-    num_transformers=param['num_transformers'], 
+    num_transformers=param['num_transformers'],
     kernel_size=param['kernel_size'],
     causal=True
 )
@@ -150,6 +173,12 @@ callbacks = [
         patience=2,
         restore_best_weights=True,
         verbose=1
+    ),
+    ReduceLROnPlateau(
+        monitor='val_loss',
+        factor=0.5,
+        patience=5,
+        min_lr=1e-6
     )
 ]
 
@@ -185,8 +214,6 @@ np.savez('./mono_energy_training/training_history.npz',
          val_mae=history.history['val_mae'])
 
 # Plot training history
-import matplotlib.pyplot as plt
-
 plt.figure(figsize=(12, 5))
 plt.subplot(1, 2, 1)
 plt.plot(history.history['loss'], label='Training Loss')
