@@ -129,3 +129,16 @@ kv/
 ehthumbs.db
 Thumbs.db
 
+# Project specific
+data/training/*.h5
+weights/
+mono_energy_validation/
+mono_minmax/
+*.ckpt
+*.npz
+*.h5
+
+# Logs
+*.log
+logs/
+
