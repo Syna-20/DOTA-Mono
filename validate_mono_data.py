@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# coding: utf-8
+# -*- coding: utf-8 -*-
 
 # Validation Script for Monoenergetic Data (105-106 eV)
 # This script validates and analyzes the available data in the 105-106 eV range
@@ -9,115 +9,106 @@ import numpy as np
 import os
 import matplotlib.pyplot as plt
 from pathlib import Path
+from src.preprocessing import DataRescaler
 
-def analyze_file(filename, label):
+def analyze_file(file_path):
     """Analyze a single HDF5 file and return energy statistics."""
-    print(f"\nAnalyzing {label} ({filename})...")
-    try:
-        with h5py.File(filename, 'r') as f:
-            # Print dataset names
-            print(f"Available datasets in {label}:")
-            for key in f.keys():
-                print(f"  - {key}")
-            
-            # Get energy values
-            if label == 'train':
-                # Combine energy0 and energy1 for training data
-                energies = np.concatenate([f['energy0'][:], f['energy1'][:]])
-            else:
-                energies = f['energy0'][:]
-                
-            min_energy = np.min(energies)
-            max_energy = np.max(energies)
-            mean_energy = np.mean(energies)
-            std_energy = np.std(energies)
-            
-            # Count samples in target range
-            target_indices = np.where((energies >= 105) & (energies <= 106))[0]
-            num_target = len(target_indices)
-            
-            print(f"\nEnergy statistics for {label}:")
-            print(f"  Total samples: {len(energies)}")
-            print(f"  Min energy: {min_energy:.2f} eV")
-            print(f"  Max energy: {max_energy:.2f} eV")
-            print(f"  Mean energy: {mean_energy:.2f} eV")
-            print(f"  Std energy: {std_energy:.2f} eV")
-            print(f"  Samples in 105-106 eV range: {num_target}")
-            print(f"  Percentage in range: {(num_target/len(energies)*100):.2f}%")
-            
-            return energies, num_target
-            
-    except Exception as e:
-        print(f"Error analyzing {filename}: {str(e)}")
-        return None, 0
+    with h5py.File(file_path, 'r') as f:
+        # Get available datasets
+        datasets = list(f.keys())
+        print(f"\nAnalyzing {os.path.basename(file_path)}")
+        print(f"Available datasets: {datasets}")
+        
+        # Get energy data
+        energy0 = f['energy0'][:]
+        energy1 = np.array([]) if 'energy1' not in f else f['energy1'][:]
+        
+        # Find indices for target energy range
+        indices0 = np.where((energy0 >= 105) & (energy0 <= 106))[0]
+        indices1 = np.where((energy1 >= 105) & (energy1 <= 106))[0] if len(energy1) > 0 else np.array([])
+        
+        # Combine indices
+        indices = np.unique(np.concatenate([indices0, indices1])) if len(indices1) > 0 else indices0
+        
+        # Calculate statistics
+        stats = {
+            'total_samples': len(energy0) + len(energy1),
+            'target_samples': len(indices),
+            'energy0_samples': len(indices0),
+            'energy1_samples': len(indices1),
+            'energy0_range': (np.min(energy0), np.max(energy0)),
+            'energy1_range': (np.min(energy1), np.max(energy1)) if len(energy1) > 0 else (0, 0)
+        }
+        
+        return stats, energy0, energy1
 
-def plot_energy_distribution(energies_dict, output_dir):
-    """Plot energy distribution for all files."""
-    # Create figure with 4 subplots
+def plot_energy_distribution(train_stats, test_stats, train_energy0, train_energy1, test_energy0, test_energy1):
+    """Create visualizations for energy distributions."""
     fig = plt.figure(figsize=(15, 12))
     gs = plt.GridSpec(2, 2, figure=fig)
     
-    # Full range distribution
+    # Full energy distribution
     ax1 = fig.add_subplot(gs[0, 0])
-    for label, energies in energies_dict.items():
-        if energies is not None:
-            ax1.hist(energies, bins=np.linspace(70, 220, 75), alpha=0.5, 
-                    label=label, color='skyblue' if label == 'train' else 'lightgreen')
-    ax1.axvline(x=105, color='r', linestyle='--', alpha=0.5)
-    ax1.axvline(x=106, color='r', linestyle='--', alpha=0.5)
-    ax1.set_title('Energy Distribution Across All Datasets')
+    ax1.hist(train_energy0, bins=50, alpha=0.5, label='Train (energy0)', color='skyblue')
+    if len(train_energy1) > 0:
+        ax1.hist(train_energy1, bins=50, alpha=0.5, label='Train (energy1)', color='lightblue')
+    ax1.hist(test_energy0, bins=50, alpha=0.5, label='Test (energy0)', color='lightgreen')
+    ax1.set_title('Full Energy Distribution')
     ax1.set_xlabel('Energy (eV)')
     ax1.set_ylabel('Count')
     ax1.legend()
-    ax1.grid(True)
+    ax1.grid(True, alpha=0.3)
     
     # Zoomed view around target range
     ax2 = fig.add_subplot(gs[0, 1])
-    for label, energies in energies_dict.items():
-        if energies is not None:
-            ax2.hist(energies, bins=np.linspace(100, 110, 40), alpha=0.5,
-                    label=label, color='skyblue' if label == 'train' else 'lightgreen')
-    ax2.axvspan(105, 106, color='red', alpha=0.2)
-    ax2.set_title('Energy Distribution Around 105-106 eV Range')
+    ax2.hist(train_energy0, bins=50, alpha=0.5, label='Train (energy0)', color='skyblue')
+    if len(train_energy1) > 0:
+        ax2.hist(train_energy1, bins=50, alpha=0.5, label='Train (energy1)', color='lightblue')
+    ax2.hist(test_energy0, bins=50, alpha=0.5, label='Test (energy0)', color='lightgreen')
+    ax2.axvspan(105, 106, color='red', alpha=0.2, label='Target Range')
+    ax2.set_xlim(104, 107)
+    ax2.set_title('Zoomed View (104-107 eV)')
     ax2.set_xlabel('Energy (eV)')
     ax2.set_ylabel('Count')
     ax2.legend()
-    ax2.grid(True)
+    ax2.grid(True, alpha=0.3)
     
-    # Sample counts
+    # Sample counts in target range
     ax3 = fig.add_subplot(gs[1, 0])
-    counts = []
-    labels = []
-    colors = []
-    for label, energies in energies_dict.items():
-        if energies is not None:
-            mask = (energies >= 105) & (energies <= 106)
-            counts.append(np.sum(mask))
-            labels.append(label)
-            colors.append('skyblue' if label == 'train' else 'lightgreen')
+    labels = ['Train (energy0)']
+    counts = [train_stats['energy0_samples']]
+    colors = ['skyblue']
+    if len(train_energy1) > 0:
+        labels.append('Train (energy1)')
+        counts.append(train_stats['energy1_samples'])
+        colors.append('lightblue')
+    labels.append('Test (energy0)')
+    counts.append(test_stats['energy0_samples'])
+    colors.append('lightgreen')
     
     bars = ax3.bar(labels, counts, color=colors)
-    ax3.set_title('Sample Count in 105-106 eV Range')
-    ax3.set_xlabel('Dataset')
-    ax3.set_ylabel('Number of Samples')
-    # Add count labels on bars
+    ax3.set_title('Samples in 105-106 eV Range')
+    ax3.set_ylabel('Count')
+    ax3.grid(True, alpha=0.3)
+    
+    # Add value labels on bars
     for bar in bars:
         height = bar.get_height()
         ax3.text(bar.get_x() + bar.get_width()/2., height,
                 f'{int(height)}', ha='center', va='bottom')
     
-    # Percentages
+    # Percentages in target range
     ax4 = fig.add_subplot(gs[1, 1])
-    percentages = []
-    for label, energies in energies_dict.items():
-        if energies is not None:
-            mask = (energies >= 105) & (energies <= 106)
-            percentages.append(np.sum(mask) / len(energies) * 100)
+    percentages = [train_stats['energy0_samples'] / train_stats['total_samples'] * 100]
+    if len(train_energy1) > 0:
+        percentages.append(train_stats['energy1_samples'] / train_stats['total_samples'] * 100)
+    percentages.append(test_stats['energy0_samples'] / test_stats['total_samples'] * 100)
     
     bars = ax4.bar(labels, percentages, color=colors)
-    ax4.set_title('Percentage of Samples in 105-106 eV Range')
-    ax4.set_xlabel('Dataset')
+    ax4.set_title('Percentage in 105-106 eV Range')
     ax4.set_ylabel('Percentage (%)')
+    ax4.grid(True, alpha=0.3)
+    
     # Add percentage labels on bars
     for bar in bars:
         height = bar.get_height()
@@ -125,43 +116,38 @@ def plot_energy_distribution(energies_dict, output_dir):
                 f'{height:.2f}%', ha='center', va='bottom')
     
     plt.tight_layout()
-    plt.savefig(f'{output_dir}/energy_distribution_analysis.png', dpi=300, bbox_inches='tight')
+    plt.savefig('energy_distribution_analysis.png')
     plt.close()
 
 def main():
     # Create output directory
-    output_dir = './mono_energy_validation'
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs('mono_energy_validation', exist_ok=True)
     
     # Analyze files
-    energies_dict = {}
-    total_target_samples = 0
+    train_stats, train_energy0, train_energy1 = analyze_file('./data/training/train.h5')
+    test_stats, test_energy0, test_energy1 = analyze_file('./data/test/test.h5')
     
-    # Analyze training file
-    train_energies, train_target = analyze_file('./data/training/train.h5', 'train')
-    energies_dict['train'] = train_energies
-    total_target_samples += train_target
+    # Print statistics
+    print("\nTraining Statistics:")
+    print(f"Total samples: {train_stats['total_samples']}")
+    print(f"Samples in energy0 (105-106 eV): {train_stats['energy0_samples']}")
+    print(f"Samples in energy1 (105-106 eV): {train_stats['energy1_samples']}")
+    print(f"Total unique samples in target range: {train_stats['target_samples']}")
+    print(f"Energy0 range: {train_stats['energy0_range'][0]:.2f} - {train_stats['energy0_range'][1]:.2f} eV")
+    print(f"Energy1 range: {train_stats['energy1_range'][0]:.2f} - {train_stats['energy1_range'][1]:.2f} eV")
     
-    # Analyze test file
-    test_energies, test_target = analyze_file('./data/test/test.h5', 'test')
-    energies_dict['test'] = test_energies
-    total_target_samples += test_target
-    
-    print(f"\nTotal samples in 105-106 eV range:")
-    print(f"Training: {train_target}")
-    print(f"Test: {test_target}")
+    print("\nTest Statistics:")
+    print(f"Total samples: {test_stats['total_samples']}")
+    print(f"Samples in energy0 (105-106 eV): {test_stats['energy0_samples']}")
+    print(f"Total unique samples in target range: {test_stats['target_samples']}")
+    print(f"Energy0 range: {test_stats['energy0_range'][0]:.2f} - {test_stats['energy0_range'][1]:.2f} eV")
     
     # Create visualizations
-    plot_energy_distribution(energies_dict, output_dir)
+    plot_energy_distribution(train_stats, test_stats, train_energy0, train_energy1, test_energy0, test_energy1)
     
-    if total_target_samples == 0:
-        print("\nWarning: No samples found in the specified energy range!")
-        print("You may need to adjust the energy range or check the data files.")
-    else:
-        print("\nValidation completed successfully!")
-        print(f"Found {total_target_samples} total samples in the target energy range.")
-        print(f"Results saved to {output_dir}/")
-        print("Recommended energy range for normalization: e_min=105, e_max=106")
+    print("\nResults saved to ./mono_energy_validation/")
+    print("Recommended energy range for normalization:")
+    print("e_min=105, e_max=106")
 
 if __name__ == "__main__":
     main() 

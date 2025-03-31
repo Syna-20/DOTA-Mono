@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 # Models of the data-driven dose calculator.
 # COPYRIGHT: TU Delft, Netherlands. 2021.
+import tensorflow as tf
+from tensorflow.keras.layers import Input, Dense, Reshape, Flatten
+from tensorflow.keras.models import Model
 import numpy as np
-from tensorflow.keras import Sequential, layers, Model
-from blocks import ConvEncoder, ConvDecoder, TransformerEncoder
+
+from .blocks import ConvEncoder, ConvDecoder, TransformerEncoder
 
 def dota_energies(num_tokens, input_shape, projection_dim,
     num_heads, num_transformers, kernel_size, dropout_rate=0.2,

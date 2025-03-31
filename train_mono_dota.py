@@ -1,115 +1,89 @@
 #!/usr/bin/env python
-# coding: utf-8
+# -*- coding: utf-8 -*-
 
-# Transformer Dose Calculation for Mono-energetic Data
-## Import libraries and define auxiliary functions
-import h5py
-import json
-import random
+import os
 import sys
-sys.path.append('./src')
+import json
 import numpy as np
-from generators import DataGenerator
-from models import dota_energies
-from preprocessing import DataRescaler
-from tensorflow_addons.optimizers import LAMB
+import tensorflow as tf
 from tensorflow.keras.callbacks import ModelCheckpoint, LearningRateScheduler
-from tensorflow.config import list_physical_devices
-print(list_physical_devices('GPU'))
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.models import load_model
+import h5py
+from src.models import dota_energies
+from src.generators import DataGenerator
+from src.preprocessing import DataRescaler
 
-## Define hyperparameters
-# Training parameters
-batch_size = 8
-num_epochs = 30
-learning_rate = 0.001
-weight_decay = 0.0001
+# Load hyperparameters
+with open('./hyperparam.json', 'r') as f:
+    hyperparam = json.load(f)
 
-# Load model and data hyperparameters
-with open('./hyperparam.json', 'r') as hfile:
-    param = json.load(hfile)
-    
 # Load data files
-path = './data/training/'
-path_ckpt = './weights/ckpt/mono_weights.ckpt'
-filename = path + 'train.h5'
+train_file = './data/training/train.h5'
+test_file = './data/training/test.h5'
 
-# Get indices for mono-energetic samples (105-106 eV)
-with h5py.File(filename, 'r') as fh:
-    energy0 = fh['energy0'][:]
-    listIDs = np.where((energy0 >= 105) & (energy0 <= 106))[0].tolist()
-print(f"Found {len(listIDs)} samples in energy range 105-106 eV")
+# Set checkpoint path
+checkpoint_path = './weights/ckpt/mono_weights.ckpt'
 
-# Training, validation split
-train_split = 0.90
-random.seed(333)
-random.shuffle(listIDs)
-trainIDs = listIDs[:int(round(train_split*len(listIDs)))]
-valIDs = listIDs[int(round(train_split*len(listIDs))):]
-print(f"Training samples: {len(trainIDs)}, Validation samples: {len(valIDs)}")
+# Find indices for mono-energetic samples in both energy0 and energy1
+with h5py.File(train_file, 'r') as f:
+    energy0 = f['energy0'][:]
+    energy1 = f['energy1'][:]
     
-# Calculate or load normalization constants
-scaler = DataRescaler(path, filename=filename)
-scaler.load(inputs=True, outputs=True)
-scale = {'y_min':scaler.y_min, 'y_max':scaler.y_max,
-        'x_min':scaler.x_min, 'x_max':scaler.x_max,
-        'e_min':105, 'e_max':106}  # Set energy range to 105-106 eV
+    # Find indices for energy0
+    indices0 = np.where((energy0 >= 105) & (energy0 <= 106))[0]
+    print(f"Found {len(indices0)} samples in energy0 in range (105, 106)")
+    
+    # Find indices for energy1
+    indices1 = np.where((energy1 >= 105) & (energy1 <= 106))[0]
+    print(f"Found {len(indices1)} samples in energy1 in range (105, 106)")
+    
+    # Combine indices
+    indices = np.unique(np.concatenate([indices0, indices1]))
+    print(f"Total unique samples: {len(indices)}")
 
-print("\nNormalization ranges:")
-print(f"Geometry: [{scale['x_min']}, {scale['x_max']}]")
-print(f"Dose: [{scale['y_min']}, {scale['y_max']}]")
-print(f"Energy: [{scale['e_min']}, {scale['e_max']}]")
+# Split into training and validation sets
+np.random.shuffle(indices)
+train_size = int(0.9 * len(indices))
+trainIDs = indices[:train_size]
+valIDs = indices[train_size:]
 
-# Initialize generators
-train_gen = DataGenerator(trainIDs, batch_size, filename, scale, num_energies=1)  # Only use energy0
-val_gen = DataGenerator(valIDs, batch_size, filename, scale, num_energies=1)
+print(f"Training samples: {len(trainIDs)}")
+print(f"Validation samples: {len(valIDs)}")
 
-## Define and train the transformer
-transformer = dota_energies(
-    num_tokens=param['num_tokens'],
-    input_shape=param['data_shape'],
-    projection_dim=param['projection_dim'],
-    num_heads=param['num_heads'],
-    num_transformers=param['num_transformers'], 
-    kernel_size=param['kernel_size'],
-    causal=True
-)
-transformer.summary()
+# Calculate normalization constants
+rescaler = DataRescaler('./data/training/', filename=train_file)
+rescaler.fit(inputs=True, outputs=True)
+scale = {
+    'x_min': rescaler.x_min,
+    'x_max': rescaler.x_max,
+    'y_min': rescaler.y_min,
+    'y_max': rescaler.y_max,
+    'e_min': 105,
+    'e_max': 106
+}
 
-# Compile the model
-optimizer = LAMB(learning_rate=learning_rate, weight_decay_rate=weight_decay)
-transformer.compile(optimizer=optimizer, loss='mse', metrics=[])
+# Initialize data generators
+batch_size = 8
+train_gen = DataGenerator(trainIDs, batch_size, train_file, scale, num_energies=2)
+val_gen = DataGenerator(valIDs, batch_size, train_file, scale, num_energies=2)
 
-# Callbacks
-# Save best model at the end of the epoch
-checkpoint = ModelCheckpoint(
-    filepath=path_ckpt,
-    save_weights_only=True,
-    save_best_only=True,
-    monitor='val_loss',
-    mode='min')
+# Define and compile model
+model = dota_energies(hyperparam)
+model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
 
-# Learning rate scheduler. Manually reduce the learning rate
-sel_epochs = [4,8,12,16,20,24,28]
-lr_scheduler = LearningRateScheduler(
-    lambda epoch, lr: lr*0.5 if epoch in sel_epochs else lr,
-    verbose=1)
+# Define callbacks
+checkpoint = ModelCheckpoint(checkpoint_path, monitor='val_loss', save_best_only=True)
+lr_scheduler = LearningRateScheduler(lambda epoch: 0.001 * (0.1 ** (epoch // 10)))
 
-# Train the model
-optimizer.learning_rate.assign(learning_rate)
-history = transformer.fit(
-    x=train_gen,
+# Train model
+history = model.fit(
+    train_gen,
     validation_data=val_gen,
-    epochs=num_epochs,
-    verbose=1,
+    epochs=30,
     callbacks=[checkpoint, lr_scheduler]
 )
 
-# Save last weights
-path_last = './weights/mono_weights.ckpt'
-transformer.save_weights(path_last)
-
-# Save training history
-history_file = './weights/mono_training_history.npz'
-np.savez(history_file,
-         loss=history.history['loss'],
-         val_loss=history.history['val_loss']) 
+# Save final weights and history
+model.save_weights('./weights/mono_weights.ckpt')
+np.savez('./weights/mono_training_history.npz', history=history.history) 

@@ -1,95 +1,98 @@
-import numpy as np
-import pandas as pd
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 import h5py
+import numpy as np
+import os
 from pathlib import Path
 
-def print_hdf5_structure(file_path):
-    """Print the structure of HDF5 file"""
-    with h5py.File(file_path, 'r') as f:
-        print("\nHDF5 file structure:")
-        print("Keys:", list(f.keys()))
-        for key in f.keys():
-            try:
-                print(f"\n{key}:")
-                print(f"Shape: {f[key].shape}")
-                print(f"Type: {f[key].dtype}")
-            except:
-                print(f"{key} is a group with keys:", list(f[key].keys()))
-
-def extract_mono_energy_data(data_path, energy_range=(105, 106), chunk_size=1000):
-    """
-    Extract data for a specific energy range and create new listIDs
+def extract_mono_energetic_data(input_file, output_file, energy_range=(105, 106), chunk_size=50):
+    """Extract mono-energetic data from input file and save to output file."""
+    print(f"Extracting data from {input_file}")
+    print(f"Energy range: {energy_range[0]}-{energy_range[1]} eV")
     
-    Parameters:
-    -----------
-    data_path : str or Path
-        Path to the data directory
-    energy_range : tuple
-        (min_energy, max_energy) in eV
-    chunk_size : int
-        Number of samples to process at once
-    """
-    data_path = Path(data_path)
-    h5_path = data_path / 'data/training/train.h5'
-    
-    # First, find all indices where energy is in the desired range
-    print("Finding indices in energy range...")
-    with h5py.File(h5_path, 'r') as f:
-        energy0 = f['energy0'][:]
-        mask = (energy0 >= energy_range[0]) & (energy0 < energy_range[1])
-        indices = np.where(mask)[0]
-    
-    if len(indices) == 0:
-        print(f"No data found in energy range {energy_range[0]}-{energy_range[1]} eV")
-        return None
-    
-    print(f"Found {len(indices)} samples in energy range {energy_range[0]}-{energy_range[1]} eV")
-    
-    # Create output file
-    output_path = data_path / f'mono_energy_{energy_range[0]}_{energy_range[1]}ev.h5'
-    
-    # Process data in chunks
-    with h5py.File(h5_path, 'r') as f_in, h5py.File(output_path, 'w') as f_out:
-        # Create datasets in output file with appropriate shapes
+    with h5py.File(input_file, 'r') as f_in:
+        # Get energy data
+        energy0 = f_in['energy0'][:]
+        energy1 = f_in['energy1'][:] if 'energy1' in f_in else None
+        
+        # Find indices for target energy range
+        indices0 = np.where((energy0 >= energy_range[0]) & (energy0 <= energy_range[1]))[0]
+        indices1 = np.where((energy1 >= energy_range[0]) & (energy1 <= energy_range[1]))[0] if energy1 is not None else np.array([])
+        
+        # Combine indices
+        indices = np.unique(np.concatenate([indices0, indices1])) if len(indices1) > 0 else indices0
         n_samples = len(indices)
-        f_out.create_dataset('energy', shape=(n_samples,), dtype=f_in['energy0'].dtype)
-        f_out.create_dataset('listID', shape=(n_samples,), dtype=np.int64)
-        f_out.create_dataset('dose0', shape=(25, 25, 150, n_samples), dtype=f_in['dose0'].dtype)
-        f_out.create_dataset('dose1', shape=(25, 25, 150, n_samples), dtype=f_in['dose1'].dtype)
         
-        # Get geometry shape from input file
-        geom_shape = f_in['geometry'].shape
-        if len(geom_shape) > 1:
-            # If geometry has multiple dimensions, keep all but the last and append n_samples
-            out_geom_shape = (*geom_shape[:-1], n_samples)
-        else:
-            # If geometry is 1D, keep it as is
-            out_geom_shape = geom_shape
-        f_out.create_dataset('geometry', shape=out_geom_shape, dtype=f_in['geometry'].dtype)
+        print(f"Found {n_samples} samples in target energy range")
         
-        # Process data in chunks
-        for i in range(0, len(indices), chunk_size):
-            chunk_indices = indices[i:i + chunk_size]
-            print(f"Processing chunk {i//chunk_size + 1}/{(len(indices) + chunk_size - 1)//chunk_size}")
+        # Create output directory if it doesn't exist
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        
+        # Create new HDF5 file with extracted data
+        with h5py.File(output_file, 'w') as f_out:
+            # Create datasets with chunking for efficient I/O
+            dose_chunks = (25, 25, 1, min(chunk_size, n_samples))  # Chunk along z and sample dimensions
+            dose_shape = (25, 25, 150, n_samples)
             
-            # Copy data for this chunk
-            f_out['energy'][i:i + len(chunk_indices)] = f_in['energy0'][chunk_indices]
-            f_out['listID'][i:i + len(chunk_indices)] = chunk_indices
-            f_out['dose0'][..., i:i + len(chunk_indices)] = f_in['dose0'][..., chunk_indices]
-            f_out['dose1'][..., i:i + len(chunk_indices)] = f_in['dose1'][..., chunk_indices]
+            f_out.create_dataset('dose0', shape=dose_shape, dtype=f_in['dose0'].dtype, chunks=dose_chunks)
+            if 'dose1' in f_in:
+                f_out.create_dataset('dose1', shape=dose_shape, dtype=f_in['dose1'].dtype, chunks=dose_chunks)
             
-            if len(geom_shape) > 1:
-                f_out['geometry'][..., i:i + len(chunk_indices)] = f_in['geometry'][..., chunk_indices]
-            else:
-                f_out['geometry'][:] = f_in['geometry'][:]
+            # Copy energy data (small enough to do in one go)
+            f_out.create_dataset('energy0', data=energy0[indices])
+            if energy1 is not None:
+                f_out.create_dataset('energy1', data=energy1[indices])
+            
+            # Process dose data in chunks along the z-dimension and sample dimension
+            total_chunks = ((150 + dose_chunks[2] - 1) // dose_chunks[2]) * ((n_samples + dose_chunks[3] - 1) // dose_chunks[3])
+            chunk_count = 0
+            
+            for z_start in range(0, 150, dose_chunks[2]):
+                z_end = min(z_start + dose_chunks[2], 150)
+                
+                for s_start in range(0, n_samples, dose_chunks[3]):
+                    s_end = min(s_start + dose_chunks[3], n_samples)
+                    chunk_indices = indices[s_start:s_end]
+                    
+                    chunk_count += 1
+                    print(f"Processing chunk {chunk_count}/{total_chunks} "
+                          f"(z={z_start}-{z_end}, samples={s_start}-{s_end})")
+                    
+                    # Copy dose0 chunk
+                    f_out['dose0'][:, :, z_start:z_end, s_start:s_end] = \
+                        f_in['dose0'][:, :, z_start:z_end, chunk_indices]
+                    
+                    # Copy dose1 chunk if it exists
+                    if 'dose1' in f_in:
+                        f_out['dose1'][:, :, z_start:z_end, s_start:s_end] = \
+                            f_in['dose1'][:, :, z_start:z_end, chunk_indices]
+            
+            # Add metadata
+            f_out.attrs['energy_range'] = energy_range
+            f_out.attrs['total_samples'] = n_samples
+            f_out.attrs['source_file'] = os.path.basename(input_file)
+            
+            print(f"Saved {n_samples} samples to {output_file}")
+
+def main():
+    # Create output directory
+    output_dir = './mono_energy_validation'
+    os.makedirs(output_dir, exist_ok=True)
     
-    print(f"\nExtraction complete!")
-    print(f"Data saved to: {output_path}")
-    print(f"Total samples extracted: {len(indices)}")
+    # Extract training data
+    train_input = './data/training/train.h5'
+    train_output = os.path.join(output_dir, 'mono_train.h5')
+    extract_mono_energetic_data(train_input, train_output)
     
-    return output_path
+    # Extract test data
+    test_input = './data/test/test.h5'
+    test_output = os.path.join(output_dir, 'mono_test.h5')
+    extract_mono_energetic_data(test_input, test_output)
+    
+    print("\nMono-energetic data extraction complete!")
+    print(f"Training data saved to: {train_output}")
+    print(f"Test data saved to: {test_output}")
 
 if __name__ == "__main__":
-    # Use the current directory as the data path
-    data_path = Path(".")
-    filtered_data = extract_mono_energy_data(data_path) 
+    main() 
